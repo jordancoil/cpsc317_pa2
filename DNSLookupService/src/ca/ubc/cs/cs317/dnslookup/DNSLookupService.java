@@ -139,210 +139,35 @@ public class DNSLookupService {
      * @param server   Address of the server to be used for the first query.
      */
     protected void iterativeQuery(DNSQuestion question, InetAddress server) {
-        String hostName = question.getHostName();
-        int typeCode = question.getRecordType().getCode();
-        int classCode = question.getRecordClass().getCode();
-        InetAddress ipAddress = nameServer;
+        ResourceRecord answer = null;
+        InetAddress nextNameServer = null;
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        DataOutputStream dos = new DataOutputStream(baos);
+        // first query
+        Set<ResourceRecord> records = individualQueryProcess(question, server);
+        Iterator<ResourceRecord> recordIter = records.iterator();
 
-        try {
-            // Building a DNS question
-            buildQuestionHeader(dos);
-            buildQuestionSection(hostName, typeCode, classCode, dos);
-
-            byte[] out_buf = baos.toByteArray();
-
-            // Send the question
-            DatagramPacket out_packet = new DatagramPacket(out_buf, out_buf.length, nameServer, DEFAULT_DNS_PORT);
-            socket.send(out_packet);
-
-            // Await response from DNS server
-            byte[] in_buf = new byte[1024];
-            DatagramPacket in_packet = new DatagramPacket(in_buf, in_buf.length);
-            socket.receive(in_packet);
-
-            int bytes_received = in_packet.getLength();
-
-            // Inputstream makes it easier to read bytes
-            DataInputStream din = new DataInputStream(new ByteArrayInputStream(in_buf));
-            for (int i = 0; i < bytes_received; i++) {
-                System.out.print(String.format("%02X", in_buf[i]));
+        while (recordIter.hasNext()) {
+            ResourceRecord next = recordIter.next();
+            RecordType recordType = next.getRecordType();
+            if (nextNameServer == null && recordType.getCode() == 2) {
+                nextNameServer = next.getInetResult();
             }
-            System.out.println("\n");
-
-            int queryId = din.readShort();
-            int flags = din.readShort();
-            int num_questions = din.readShort();
-            int num_answer_rrs = din.readShort();
-            int num_auth_rrs = din.readShort();
-            int num_additional_rrs = din.readShort();
-
-//            System.out.println("Transaction ID: 0x" + String.format("%x", queryId));
-//            System.out.println("Flags: 0x" + String.format("%x", flags));
-//            System.out.println("Questions: 0x" + String.format("%x", num_questions));
-            System.out.println("Answers RRs: " + String.format("%d", num_answer_rrs));
-            System.out.println("Authority RRs: " + String.format("%d", num_auth_rrs));
-            System.out.println("Additional RRs: " + String.format("%d", num_additional_rrs));
-
-            // Read bytes from question to move offset
-            int record_length = 0;
-            List<String> records = new ArrayList<>();
-            while ((record_length = din.readByte()) > 0) {
-                // If record length is not 0, then we read bytes into a record
-                byte[] record = new byte[record_length];
-
-                for (int i = 0; i < record_length; i++) {
-                    record[i] = din.readByte();
-                }
-
-                records.add(new String(record, "UTF-8"));
-            }
-
-            int questionRecordType = din.readShort();
-            int questionRecordClass = din.readShort();
-
-//            System.out.println("Question Record Type: 0x" + String.format("%x", questionRecordType));
-//            System.out.println("Question Record Class: 0x" + String.format("%x", questionRecordClass));
-
-
-            if (num_answer_rrs > 0 || num_auth_rrs > 0 || num_additional_rrs > 0) {
-                int total_records = num_answer_rrs + num_auth_rrs + num_additional_rrs;
-
-                for (int i = 0; i < total_records; i++) {
-                    int recordNameOffset = din.readShort();
-                    int recordType = din.readShort();
-                    int recordClass = din.readShort();
-                    int ttl = din.readInt();
-
-                    int data_length = din.readShort();
-                    byte[] byteResult = new byte[data_length];
-
-                    int string_length = 0;
-                    String recordstring = "";
-                    while ((string_length = din.readByte() & 0xff) > 0) {
-                        recordstring += ".";
-                        byte[] stringbuf = new byte[512];
-                        if (string_length >= 192) {
-                            // Compression - points to somewhere else...
-                            int pointer = (string_length - 192) + (din.readByte() & 0xff);
-                            int target_length = in_buf[pointer];
-                            for (int j = 0; j < target_length + pointer; j++) {
-                                stringbuf[j] = in_buf[j+pointer];
-                            }
-                        } else {
-                            for (int j = 0; j < string_length; j++) {
-                                stringbuf[j] = din.readByte();
-                            }
-                        }
-                        recordstring += new String(stringbuf, "UTF-8");
-                    }
-
-                    System.out.println("GOT RECORD " + recordstring);
-
-                    ResourceRecord record;
-
-                    // handle record type
-                    switch (recordType) {
-                        case 1: // A - InetAddress
-//                            InetAddress addressResult = InetAddress.getByAddress(byteResult);
-//                            record = new ResourceRecord(question, ttl, addressResult);
-//                            System.out.println("Address: " + new String(byteResult, "US-ASCII"));
-//                            System.out.println("got address: " + addressResult.getAddress());
-                            break;
-                        case 2: // NS - string
-                        case 15: // MX - string
-                        case 16: // TXT - string???
-                        case 5: // CNAME - string
-//                            System.out.println(recordType);
-//                            String result = byteArrayToHexString(byteResult);
-//                            record = new ResourceRecord(question, ttl, result);
-//                            System.out.println("Record: " + new String(byteResult, "US-ASCII"));
-//                            System.out.println("got record: " + result);
-                            break;
-                        case 3: // MD - ?
-                        case 4: // MF - ?
-                        case 6: // SOA - ?
-                        case 7: // MB - ?
-                        case 8: // MG - ?
-                        case 9: // MR - ?
-                        case 10: // NULL - ?
-                        case 11: // WKS - ?
-                        case 12: // PTR - ?
-                        case 13: // HINFO - ?
-                        case 14: // MINFO - ?
-                            break;
-                    }
-
-                }
-
-            }
-
-//            int recordNameOffset = din.readShort();
-//            int recordType = din.readShort();
-//            int recordClass = din.readShort();
-//            int TTL = din.readInt();
-//            short addrLen = din.readShort();
-//            String address = new String(din.readNBytes(addrLen));
-//
-//            System.out.println("Len: 0x" + String.format("%x", addrLen));
-//
-//            System.out.print("Address: " + address);
-
-//            for (int i = 0; i < addrLen; i++ ) {
-//                System.out.print("" + String.format("%d", (din.readByte() & 0xFF)) + ".");
-//            }
-            System.out.println("\n");
-            System.out.println("--end--\n");
-            System.out.println("\n");
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void buildQuestionSection(String hostName, int typeCode, int classCode, DataOutputStream dos) throws IOException {
-        // Split string into parts by "."
-        String[] domainParts = hostName.split("\\.");
-
-        for (int i = 0; i<domainParts.length; i++) {
-            byte[] domainBytes = domainParts[i].getBytes("UTF-8");
-            // first byte signals the length of this part of the hostname
-            dos.writeByte(domainBytes.length);
-            // then we write that many bytes, corresponding to that part of the hostname
-            dos.write(domainBytes);
+            cache.addResult(recordIter.next());
         }
 
-        // 0x00 signals no more parts of hostname remaining
-        dos.writeByte(0x00);
+        Collection<ResourceRecord> results = cache.getCachedResults(question, true);
+        if (results.isEmpty() && nextNameServer != null) {
+            // second query
+            records = individualQueryProcess(question, server);
+            recordIter = records.iterator();
 
-        // Next comes type eg. A = 0x01
-        dos.writeShort(typeCode);
-
-        // Then finally class eg. IN = 0x01
-        dos.writeShort(classCode);
-    }
-
-    private void buildQuestionHeader(DataOutputStream dos) throws IOException {
-        // Identifier: server will copy ID into response so it can be matched to a query.
-        // TODO: randomly generate this.
-        dos.writeShort(0x1234);
-
-        // Write Query Flags.
-        // QR, Opcode, AA, TC, RD, RA = 0, for standard iterative query, the rest is 0
-        dos.writeShort(0x0000);
-
-        // Question Count: Number of questions in the Question section. Default to 1
-        dos.writeShort(0x0001);
-
-        // Answer Record Count: Number of RRs in the Answer section. Question has 0
-        dos.writeShort(0x0000);
-
-        // Authority Record Count: Number of RRs in the Authority section. Question has 0
-        dos.writeShort(0x0000);
-
-        // Additional Record Count: Number of RRs in the Additional section. Question has 0
-        dos.writeShort(0x0000);
+            while (recordIter.hasNext()) {
+                ResourceRecord next = recordIter.next();
+                cache.addResult(recordIter.next());
+            }
+        } else {
+            return;
+        }
     }
 
     /**
@@ -362,9 +187,22 @@ public class DNSLookupService {
      * set.
      */
     protected Set<ResourceRecord> individualQueryProcess(DNSQuestion question, InetAddress server) {
+        try {
+            ByteBuffer queryBuffer = ByteBuffer.allocate(1024);
+            buildQuery(queryBuffer, question);
+            DatagramPacket out_packet = new DatagramPacket(queryBuffer.array(), queryBuffer.limit(), nameServer, DEFAULT_DNS_PORT);
+            socket.send(out_packet);
 
-        /* TO BE COMPLETED BY THE STUDENT */
-        return null;
+            ByteBuffer responseBuffer = ByteBuffer.allocate(1024);
+            DatagramPacket in_packet = new DatagramPacket(responseBuffer.array(), responseBuffer.limit());
+            socket.receive(in_packet);
+
+            return processResponse(responseBuffer);
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+
     }
 
     /**
@@ -379,9 +217,40 @@ public class DNSLookupService {
      * @return The transaction ID used for the query.
      */
     protected int buildQuery(ByteBuffer queryBuffer, DNSQuestion question) {
+        // Building Header
+        // Transaction ID
+        // TODO: randomly generate this.
+        short randomShort = (short) random.nextInt(Short.MAX_VALUE + 1);
+        queryBuffer.putShort(randomShort);
+        // Query Flags
+        queryBuffer.putShort((short) 0x0000); // QR, Opcode, AA, TC, RD, RA = 0, for standard iterative query, the rest is 0
+        queryBuffer.putShort((short) 0x0001); // Question Count: Number of questions in the Question section. Default to 1
+        queryBuffer.putShort((short) 0x0000); // Answer Record Count: Number of RRs in the Answer section. Question has 0
+        queryBuffer.putShort((short) 0x0000); // Authority Record Count: Number of RRs in the Authority section. Question has 0
+        queryBuffer.putShort((short) 0x0000); // Additional Record Count: Number of RRs in the Additional section. Question has 0
 
-        /* TO BE COMPLETED BY THE STUDENT */
-        return 0;
+        // Building Question Section
+        String hostName = question.getHostName();
+        String[] domainParts = hostName.split("\\.");
+        try {
+            for (int i = 0; i<domainParts.length; i++) {
+                byte[] domainBytes = new byte[0];
+                domainBytes = domainParts[i].getBytes("UTF-8");
+
+                queryBuffer.put((byte) domainBytes.length); // first byte signals the length of this part of the hostname
+                queryBuffer.put(domainBytes); // then we write that many bytes, corresponding to that part of the hostname
+            }
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+
+        int typeCode = question.getRecordType().getCode();
+        int classCode = question.getRecordClass().getCode();
+
+        queryBuffer.put((byte) 0x00); // 0x00 signals no more parts of hostname remaining
+        queryBuffer.putShort((short) typeCode); // Next comes type eg. A = 0x01
+        queryBuffer.putShort((short) classCode); // Then finally class eg. IN = 0x01
+        return randomShort;
     }
 
     /**
@@ -397,8 +266,138 @@ public class DNSLookupService {
      * nameservers, returns an empty set.
      */
     protected Set<ResourceRecord> processResponse(ByteBuffer responseBuffer) {
+//        int bytes_received = in_packet.getLength();
+//        for (int i = 0; i < bytes_received; i++) {
+//            System.out.print(String.format("%02X", in_buf.get(i)));
+//        }
+//        System.out.println("\n");
 
-        /* TO BE COMPLETED BY THE STUDENT */
+        int transactionId = responseBuffer.getShort();
+        int flags = responseBuffer.getShort();
+        int num_questions = responseBuffer.getShort();
+        int num_answer_rrs = responseBuffer.getShort();
+        int num_auth_rrs = responseBuffer.getShort();
+        int num_additional_rrs = responseBuffer.getShort();
+
+//            verbose.printResponseHeaderInfo(queryId, );
+
+        System.out.println("Transaction ID: 0x" + String.format("%x", transactionId));
+        System.out.println("Flags: 0x" + String.format("%x", flags));
+        System.out.println("Questions: 0x" + String.format("%x", num_questions));
+        System.out.println("Answers RRs: " + String.format("%d", num_answer_rrs));
+        System.out.println("Authority RRs: " + String.format("%d", num_auth_rrs));
+        System.out.println("Additional RRs: " + String.format("%d", num_additional_rrs));
+
+        // Read bytes from question to move offset
+//        int record_length = 0;
+//        List<String> records = new ArrayList<>();
+//            while ((record_length = din.readByte()) > 0) {
+//                // If record length is not 0, then we read bytes into a record
+//                byte[] record = new byte[record_length];
+//
+//                for (int i = 0; i < record_length; i++) {
+//                    record[i] = din.readByte();
+//                }
+//
+//                records.add(new String(record, "UTF-8"));
+//            }
+//
+//            int questionRecordType = din.readShort();
+//            int questionRecordClass = din.readShort();
+//
+////            System.out.println("Question Record Type: 0x" + String.format("%x", questionRecordType));
+////            System.out.println("Question Record Class: 0x" + String.format("%x", questionRecordClass));
+//
+//
+//            if (num_answer_rrs > 0 || num_auth_rrs > 0 || num_additional_rrs > 0) {
+//                int total_records = num_answer_rrs + num_auth_rrs + num_additional_rrs;
+//
+//                for (int i = 0; i < total_records; i++) {
+//                    int recordNameOffset = din.readShort();
+//                    int recordType = din.readShort();
+//                    int recordClass = din.readShort();
+//                    int ttl = din.readInt();
+//
+//                    int data_length = din.readShort();
+//                    byte[] byteResult = new byte[data_length];
+//
+//                    int string_length = 0;
+//                    String recordstring = "";
+//                    while ((string_length = din.readByte() & 0xff) > 0) {
+//                        recordstring += ".";
+//                        byte[] stringbuf = new byte[512];
+//                        if (string_length >= 192) {
+//                            // Compression - points to somewhere else...
+//                            int pointer = (string_length - 192) + (din.readByte() & 0xff);
+//                            int target_length = in_buf[pointer];
+//                            for (int j = 0; j < target_length + pointer; j++) {
+//                                stringbuf[j] = in_buf[j+pointer];
+//                            }
+//                        } else {
+//                            for (int j = 0; j < string_length; j++) {
+//                                stringbuf[j] = din.readByte();
+//                            }
+//                        }
+//                        recordstring += new String(stringbuf, "UTF-8");
+//                    }
+//
+//                    System.out.println("GOT RECORD " + recordstring);
+//
+//                    ResourceRecord record;
+//
+//                    // handle record type
+//                    switch (recordType) {
+//                        case 1: // A - InetAddress
+////                            InetAddress addressResult = InetAddress.getByAddress(byteResult);
+////                            record = new ResourceRecord(question, ttl, addressResult);
+////                            System.out.println("Address: " + new String(byteResult, "US-ASCII"));
+////                            System.out.println("got address: " + addressResult.getAddress());
+//                            break;
+//                        case 2: // NS - string
+//                        case 15: // MX - string
+//                        case 16: // TXT - string???
+//                        case 5: // CNAME - string
+////                            System.out.println(recordType);
+////                            String result = byteArrayToHexString(byteResult);
+////                            record = new ResourceRecord(question, ttl, result);
+////                            System.out.println("Record: " + new String(byteResult, "US-ASCII"));
+////                            System.out.println("got record: " + result);
+//                            break;
+//                        case 3: // MD - ?
+//                        case 4: // MF - ?
+//                        case 6: // SOA - ?
+//                        case 7: // MB - ?
+//                        case 8: // MG - ?
+//                        case 9: // MR - ?
+//                        case 10: // NULL - ?
+//                        case 11: // WKS - ?
+//                        case 12: // PTR - ?
+//                        case 13: // HINFO - ?
+//                        case 14: // MINFO - ?
+//                            break;
+//                    }
+//
+//                }
+//
+//            }
+//
+////            int recordNameOffset = din.readShort();
+////            int recordType = din.readShort();
+////            int recordClass = din.readShort();
+////            int TTL = din.readInt();
+////            short addrLen = din.readShort();
+////            String address = new String(din.readNBytes(addrLen));
+////
+////            System.out.println("Len: 0x" + String.format("%x", addrLen));
+////
+////            System.out.print("Address: " + address);
+//
+////            for (int i = 0; i < addrLen; i++ ) {
+////                System.out.print("" + String.format("%d", (din.readByte() & 0xFF)) + ".");
+////            }
+        System.out.println("\n");
+        System.out.println("--end--\n");
+        System.out.println("\n");
         return null;
     }
 
