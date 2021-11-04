@@ -152,7 +152,6 @@ public class DNSLookupService {
             if (nextNameServer == null && recordType.getCode() == 2) {
                 nextNameServer = next.getInetResult();
             }
-            cache.addResult(recordIter.next());
         }
 
         Collection<ResourceRecord> results = cache.getCachedResults(question, true);
@@ -163,7 +162,6 @@ public class DNSLookupService {
 
             while (recordIter.hasNext()) {
                 ResourceRecord next = recordIter.next();
-                cache.addResult(recordIter.next());
             }
         } else {
             return;
@@ -189,8 +187,9 @@ public class DNSLookupService {
     protected Set<ResourceRecord> individualQueryProcess(DNSQuestion question, InetAddress server) {
         try {
             ByteBuffer queryBuffer = ByteBuffer.allocate(1024);
-            buildQuery(queryBuffer, question);
-            DatagramPacket out_packet = new DatagramPacket(queryBuffer.array(), queryBuffer.limit(), nameServer, DEFAULT_DNS_PORT);
+            int tId = buildQuery(queryBuffer, question);
+            DatagramPacket out_packet = new DatagramPacket(queryBuffer.array(), queryBuffer.position(), nameServer, DEFAULT_DNS_PORT);
+            verbose.printQueryToSend(question, nameServer, tId);
             socket.send(out_packet);
 
             ByteBuffer responseBuffer = ByteBuffer.allocate(1024);
@@ -219,7 +218,6 @@ public class DNSLookupService {
     protected int buildQuery(ByteBuffer queryBuffer, DNSQuestion question) {
         // Building Header
         // Transaction ID
-        // TODO: randomly generate this.
         short randomShort = (short) random.nextInt(Short.MAX_VALUE + 1);
         queryBuffer.putShort(randomShort);
         // Query Flags
@@ -266,11 +264,12 @@ public class DNSLookupService {
      * nameservers, returns an empty set.
      */
     protected Set<ResourceRecord> processResponse(ByteBuffer responseBuffer) {
-//        int bytes_received = in_packet.getLength();
-//        for (int i = 0; i < bytes_received; i++) {
-//            System.out.print(String.format("%02X", in_buf.get(i)));
-//        }
-//        System.out.println("\n");
+        byte[] responseBytes = responseBuffer.array();
+        StringBuilder sb = new StringBuilder();
+        for (byte b : responseBytes) {
+            sb.append(String.format("%02X ", b));
+        }
+        System.out.println(sb.toString());
 
         int transactionId = responseBuffer.getShort();
         int flags = responseBuffer.getShort();
@@ -279,67 +278,66 @@ public class DNSLookupService {
         int num_auth_rrs = responseBuffer.getShort();
         int num_additional_rrs = responseBuffer.getShort();
 
-//            verbose.printResponseHeaderInfo(queryId, );
+        int errorCodeMask = 0x000f;
+        int errorCode = (flags & errorCodeMask);
 
-        System.out.println("Transaction ID: 0x" + String.format("%x", transactionId));
-        System.out.println("Flags: 0x" + String.format("%x", flags));
-        System.out.println("Questions: 0x" + String.format("%x", num_questions));
-        System.out.println("Answers RRs: " + String.format("%d", num_answer_rrs));
-        System.out.println("Authority RRs: " + String.format("%d", num_auth_rrs));
-        System.out.println("Additional RRs: " + String.format("%d", num_additional_rrs));
+        int authoritativeMask = 0x0400;
+        int authoritativeBit = (flags & authoritativeMask) >> 10;
+        boolean authoritative = authoritativeBit > 0;
+
+        verbose.printResponseHeaderInfo(transactionId, authoritative, errorCode);
 
         // Read bytes from question to move offset
-//        int record_length = 0;
-//        List<String> records = new ArrayList<>();
-//            while ((record_length = din.readByte()) > 0) {
-//                // If record length is not 0, then we read bytes into a record
-//                byte[] record = new byte[record_length];
-//
-//                for (int i = 0; i < record_length; i++) {
-//                    record[i] = din.readByte();
-//                }
-//
-//                records.add(new String(record, "UTF-8"));
-//            }
-//
-//            int questionRecordType = din.readShort();
-//            int questionRecordClass = din.readShort();
-//
-////            System.out.println("Question Record Type: 0x" + String.format("%x", questionRecordType));
-////            System.out.println("Question Record Class: 0x" + String.format("%x", questionRecordClass));
-//
-//
+        int record_length = 0;
+        String prefix = "";
+        StringBuffer questionStringBuf = new StringBuffer();
+        while ((record_length = responseBuffer.get()) > 0) {
+            // If record length is not 0, then we read bytes into a record
+            questionStringBuf.append(prefix);
+            byte[] questionpart = new byte[record_length];
+
+            for (int i = 0; i < record_length; i++) {
+                questionpart[i] = responseBuffer.get();
+            }
+
+            prefix = ".";
+            questionStringBuf.append(new String(questionpart));
+        }
+
+        int questionRecordType = responseBuffer.getShort();
+        int questionRecordClass = responseBuffer.getShort();
+        String hostname = questionStringBuf.toString();
+        DNSQuestion question = new DNSQuestion(hostname, RecordType.getByCode(questionRecordType), RecordClass.getByCode(questionRecordClass));
+        System.out.println(questionStringBuf.toString());
+        System.out.println("Question Record Type: 0x" + String.format("%x", questionRecordType));
+        System.out.println("Question Record Class: 0x" + String.format("%x", questionRecordClass));
+
+        verbose.printAnswersHeader(num_answer_rrs);
+
+        for (int i = 0; i < num_answer_rrs; i++) {
+            readRecordFromBuffer(responseBuffer);
+        }
+
+        verbose.printNameserversHeader(num_auth_rrs);
+
+        for (int i = 0; i < num_auth_rrs; i++) {
+            readRecordFromBuffer(responseBuffer);
+        }
+
+        verbose.printAdditionalInfoHeader(num_additional_rrs);
+
+        for (int i = 0; i < num_additional_rrs; i++) {
+            readRecordFromBuffer(responseBuffer);
+        }
+
+
 //            if (num_answer_rrs > 0 || num_auth_rrs > 0 || num_additional_rrs > 0) {
 //                int total_records = num_answer_rrs + num_auth_rrs + num_additional_rrs;
 //
 //                for (int i = 0; i < total_records; i++) {
-//                    int recordNameOffset = din.readShort();
-//                    int recordType = din.readShort();
-//                    int recordClass = din.readShort();
-//                    int ttl = din.readInt();
+
 //
-//                    int data_length = din.readShort();
-//                    byte[] byteResult = new byte[data_length];
 //
-//                    int string_length = 0;
-//                    String recordstring = "";
-//                    while ((string_length = din.readByte() & 0xff) > 0) {
-//                        recordstring += ".";
-//                        byte[] stringbuf = new byte[512];
-//                        if (string_length >= 192) {
-//                            // Compression - points to somewhere else...
-//                            int pointer = (string_length - 192) + (din.readByte() & 0xff);
-//                            int target_length = in_buf[pointer];
-//                            for (int j = 0; j < target_length + pointer; j++) {
-//                                stringbuf[j] = in_buf[j+pointer];
-//                            }
-//                        } else {
-//                            for (int j = 0; j < string_length; j++) {
-//                                stringbuf[j] = din.readByte();
-//                            }
-//                        }
-//                        recordstring += new String(stringbuf, "UTF-8");
-//                    }
 //
 //                    System.out.println("GOT RECORD " + recordstring);
 //
@@ -398,7 +396,77 @@ public class DNSLookupService {
         System.out.println("\n");
         System.out.println("--end--\n");
         System.out.println("\n");
+
+        // TODO: loop through records and add them to the cache.
+        // cache.addResult(recordIter.next()); // TODO: move to process result
         return null;
+    }
+
+    private void readRecordFromBuffer(ByteBuffer responseBuffer) {
+        String recordNameString = "";
+        int recordName = responseBuffer.getShort();
+        int isPointerMask = 0xC000;
+        boolean isPointer = ((recordName & isPointerMask) >> 14) == 3;
+        if (isPointer) {
+            int pointerMask = 0x3FFF;
+            int pointer = (recordName & pointerMask);
+            StringBuffer strBuf = new StringBuffer();
+            getNameAtPos(responseBuffer, strBuf, pointer, "");
+            recordNameString = strBuf.toString();
+        } else {
+//            recordNameString = readNameFromBuffer(responseBuffer);
+        }
+
+        int recordType = responseBuffer.getShort();
+        int recordClass = responseBuffer.getShort();
+        DNSQuestion recordsQuestion = new DNSQuestion(recordNameString, RecordType.getByCode(recordType), RecordClass.getByCode(recordClass));
+
+        int ttl = responseBuffer.getInt();
+
+        int recordLength = responseBuffer.getShort();
+        int recordPartlength = 0;
+        String recordPrefix = "";
+        StringBuffer recordStringBuf = new StringBuffer();
+        while ((recordPartlength = responseBuffer.get() & 0xff) > 0) {
+            if (recordPartlength >= 192) {
+                // Compression - points to somewhere else...
+                int targetIndex = (recordPartlength - 192) + (responseBuffer.get() & 0xff);
+                getNameAtPos(responseBuffer, recordStringBuf, targetIndex, recordPrefix);
+                break; // pointer signals end.
+            } else {
+                recordStringBuf.append(recordPrefix);
+                readNameFromBuffer(responseBuffer, recordStringBuf, recordPartlength);
+            }
+            recordPrefix = ".";
+        }
+
+        String result = recordStringBuf.toString();
+        ResourceRecord record = new ResourceRecord(recordsQuestion, ttl, result);
+        verbose.printIndividualResourceRecord(record, recordType, recordClass);
+    }
+
+    private void readNameFromBuffer(ByteBuffer responseBuffer, StringBuffer strBuf, int length) {
+        byte[] namePart = new byte[length];
+        for (int i = 0; i < length; i++) {
+            namePart[i] = responseBuffer.get();
+        }
+        strBuf.append(new String(namePart));
+    }
+
+    private void getNameAtPos(ByteBuffer responseBuffer, StringBuffer strBuf, int pointer, String prefix) {
+        int length = 0;
+        int i = pointer;
+        while((length = responseBuffer.get(i)) > 0) {
+            i++; // since we need to move the length.
+            strBuf.append(prefix);
+            byte[] namePart = new byte[length];
+            for (int j = 0; j < length; j++) {
+                namePart[j] = responseBuffer.get(i+j);
+            }
+            strBuf.append(new String(namePart));
+            prefix = ".";
+            i += length;
+        }
     }
 
     /**
