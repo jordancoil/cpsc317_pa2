@@ -345,21 +345,8 @@ public class DNSLookupService {
 //
 //                    // handle record type
 //                    switch (recordType) {
-//                        case 1: // A - InetAddress
-////                            InetAddress addressResult = InetAddress.getByAddress(byteResult);
-////                            record = new ResourceRecord(question, ttl, addressResult);
-////                            System.out.println("Address: " + new String(byteResult, "US-ASCII"));
-////                            System.out.println("got address: " + addressResult.getAddress());
-//                            break;
-//                        case 2: // NS - string
-//                        case 15: // MX - string
-//                        case 16: // TXT - string???
-//                        case 5: // CNAME - string
-////                            System.out.println(recordType);
-////                            String result = byteArrayToHexString(byteResult);
-////                            record = new ResourceRecord(question, ttl, result);
-////                            System.out.println("Record: " + new String(byteResult, "US-ASCII"));
-////                            System.out.println("got record: " + result);
+
+////
 //                            break;
 //                        case 3: // MD - ?
 //                        case 4: // MF - ?
@@ -426,31 +413,63 @@ public class DNSLookupService {
         int recordLength = responseBuffer.getShort();
         int recordPartlength = 0;
         String recordPrefix = "";
-        StringBuffer recordStringBuf = new StringBuffer();
+        ByteBuffer byteResult = ByteBuffer.allocate(512);
+//        StringBuffer recordStringBuf = new StringBuffer();
         while ((recordPartlength = responseBuffer.get() & 0xff) > 0) {
             if (recordPartlength >= 192) {
                 // Compression - points to somewhere else...
                 int targetIndex = (recordPartlength - 192) + (responseBuffer.get() & 0xff);
-                getNameAtPos(responseBuffer, recordStringBuf, targetIndex, recordPrefix);
+
+                int length = 0;
+                int i = targetIndex;
+                while((length = responseBuffer.get(i)) > 0) {
+                    i++; // since we need to move the length.
+                    byteResult.put(recordPrefix.getBytes());
+
+                    for (int j = 0; j < length; j++) {
+                        byteResult.put(responseBuffer.get(i+j));
+                    }
+                    recordPrefix = ".";
+                    i += length;
+                }
                 break; // pointer signals end.
             } else {
-                recordStringBuf.append(recordPrefix);
-                readNameFromBuffer(responseBuffer, recordStringBuf, recordPartlength);
+                byteResult.put(recordPrefix.getBytes());
+                for (int i = 0; i < recordPartlength; i++) {
+                    byteResult.put(responseBuffer.get());
+                }
             }
             recordPrefix = ".";
         }
 
-        String result = recordStringBuf.toString();
-        ResourceRecord record = new ResourceRecord(recordsQuestion, ttl, result);
-        verbose.printIndividualResourceRecord(record, recordType, recordClass);
-    }
+        byte[] realResult = new byte[byteResult.position()];
+        byteResult.rewind();
 
-    private void readNameFromBuffer(ByteBuffer responseBuffer, StringBuffer strBuf, int length) {
-        byte[] namePart = new byte[length];
-        for (int i = 0; i < length; i++) {
-            namePart[i] = responseBuffer.get();
+        ResourceRecord record;
+        switch (recordType) {
+            case 1:  // A
+            case 28: // AAAA
+                try {
+                    InetAddress addressResult = InetAddress.getByAddress(byteResult.get(realResult).array());
+                    record = new ResourceRecord(recordsQuestion, ttl, addressResult);
+                    verbose.printIndividualResourceRecord(record, recordType, recordClass);
+                    cache.addResult(record);
+                } catch (UnknownHostException e) {
+                    e.printStackTrace();
+                }
+//                String result = recordStringBuf.toString();
+
+                break;
+            case 2:  // NS
+            case 5:  // CNAME
+            case 15: // MX
+                record = new ResourceRecord(recordsQuestion, ttl, new String(byteResult.get(realResult).array()));
+                verbose.printIndividualResourceRecord(record, recordType, recordClass);
+                cache.addResult(record);
+                break;
         }
-        strBuf.append(new String(namePart));
+
+
     }
 
     private void getNameAtPos(ByteBuffer responseBuffer, StringBuffer strBuf, int pointer, String prefix) {
